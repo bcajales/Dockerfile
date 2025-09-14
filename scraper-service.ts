@@ -20,7 +20,11 @@ const scrapingLogic = `
           if (match && match[1]) {
             const idDoc = match[1];
             const idLicitacion = new URL(initialUrl).searchParams.get('idlicitacion');
-            const linkDescarga = \`https://www.mercadopublico.cl/Procurement/Modules/RFB/DownloadDoc.aspx?idlic=\${idLicitacion}&idDoc=\${idDoc}\`;
+            
+            // --- LÍNEA CORREGIDA ---
+            // Se usan comillas simples y '+' para evitar el conflicto.
+            const linkDescarga = 'https://www.mercadopublico.cl/Procurement/Modules/RFB/DownloadDoc.aspx?idlic=' + idLicitacion + '&idDoc=' + idDoc;
+
             if (!processedUrls.has(linkDescarga)) {
               allAttachments.push({ nombre: nombreAnexo, url_descarga: linkDescarga });
               processedUrls.add(linkDescarga);
@@ -55,7 +59,10 @@ const scrapingLogic = `
         data.allAttachments.push(...dedicatedAttachments);
     }
     
-    return data.allAttachments;
+    // Filtra para eliminar duplicados por si acaso
+    const uniqueAttachments = data.allAttachments.filter((v,i,a)=>a.findIndex(t=>(t.url_descarga === v.url_descarga))===i)
+
+    return uniqueAttachments;
   }
 `;
 
@@ -69,7 +76,7 @@ async function scrapeWithBrowserlessAPI(url: string, apiKey: string): Promise<an
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             code: scrapingLogic,
-            context: { url: url } // Pasamos la URL a nuestro script remoto
+            context: { url: url }
         })
     });
 
@@ -97,8 +104,10 @@ async function handler(req: Request): Promise<Response> {
             return new Response(JSON.stringify({ error: 'La URL es requerida' }), { status: 400 });
         }
         const data = await scrapeWithBrowserlessAPI(url, apiKey);
+        console.log(`[BROWSERLESS-API] Trabajo completado para ${url}. Se encontraron ${data.length} anexos.`);
         return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
     } catch (e) {
+        console.error(`[HANDLER_ERROR]`, e);
         return new Response(JSON.stringify({ error: e.message }), { status: 500 });
     }
 }
