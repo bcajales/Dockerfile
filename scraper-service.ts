@@ -1,6 +1,5 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
-// Esta es la lógica de scraping que enviaremos a Browserless para que la ejecute.
 const scrapingLogic = `
   async ({ page, url }) => {
     await page.goto(url, { waitUntil: 'networkidle' });
@@ -10,7 +9,6 @@ const scrapingLogic = `
       const processedUrls = new Set();
       const initialUrl = location.href;
 
-      // 1. Scrapear tabla principal
       document.querySelectorAll('table[id*="grvAnexos"] tbody tr').forEach(row => {
         const nombreAnexo = row.querySelector('td:nth-child(1)')?.textContent?.trim();
         const inputDescarga = row.querySelector('input[type="image"]');
@@ -20,11 +18,7 @@ const scrapingLogic = `
           if (match && match[1]) {
             const idDoc = match[1];
             const idLicitacion = new URL(initialUrl).searchParams.get('idlicitacion');
-            
-            // --- LÍNEA CORREGIDA ---
-            // Se usan comillas simples y '+' para evitar el conflicto.
             const linkDescarga = 'https://www.mercadopublico.cl/Procurement/Modules/RFB/DownloadDoc.aspx?idlic=' + idLicitacion + '&idDoc=' + idDoc;
-
             if (!processedUrls.has(linkDescarga)) {
               allAttachments.push({ nombre: nombreAnexo, url_descarga: linkDescarga });
               processedUrls.add(linkDescarga);
@@ -33,13 +27,11 @@ const scrapingLogic = `
         }
       });
       
-      // 2. Buscar link a página dedicada
       const dedicatedPageLink = document.querySelector("a[href*='ViewAttachment.aspx']")?.href;
       
       return { allAttachments, dedicatedPageLink };
     });
 
-    // 3. Si hay página dedicada, ir y scrapear también
     if (data.dedicatedPageLink) {
         await page.goto(data.dedicatedPageLink, { waitUntil: 'networkidle' });
         const dedicatedAttachments = await page.evaluate(() => {
@@ -55,19 +47,18 @@ const scrapingLogic = `
             });
             return attachments;
         });
-        // Combinar resultados
         data.allAttachments.push(...dedicatedAttachments);
     }
     
-    // Filtra para eliminar duplicados por si acaso
-    const uniqueAttachments = data.allAttachments.filter((v,i,a)=>a.findIndex(t=>(t.url_descarga === v.url_descarga))===i)
+    const uniqueAttachments = data.allAttachments.filter((v,i,a)=>a.findIndex(t=>(t.url_descarga === v.url_descarga))===i);
 
     return uniqueAttachments;
   }
 `;
 
 async function scrapeWithBrowserlessAPI(url: string, apiKey: string): Promise<any[]> {
-    const apiEndpoint = `https://chrome.browserless.io/function?token=${apiKey}`;
+    // --- ÚNICO CAMBIO AQUÍ ---
+    const apiEndpoint = `https://production-sfo.browserless.io/function?token=${apiKey}`;
     
     console.log(`[BROWSERLESS-API] Enviando trabajo para: ${url}`);
     
