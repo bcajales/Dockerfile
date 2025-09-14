@@ -1,99 +1,102 @@
-import { serve, chromium, cheerio } from "./deps.ts";
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
-async function scrapeAllAttachmentsWithBrowser(initialUrl: string): Promise<any[]> {
-    let browser;
-    try {
-        // Obtiene la API Key de las variables de entorno
-        const apiKey = Deno.env.get("BROWSERLESS_API_KEY");
-        if (!apiKey) {
-            throw new Error("La variable de entorno BROWSERLESS_API_KEY no está definida.");
-        }
+// Esta es la lógica de scraping que enviaremos a Browserless para que la ejecute.
+const scrapingLogic = `
+  async ({ page, url }) => {
+    await page.goto(url, { waitUntil: 'networkidle' });
 
-        // --- CAMBIO CLAVE: Nos conectamos a un navegador remoto ---
-        const browserWSEndpoint = `wss://chrome.browserless.io?token=${apiKey}`;
-        console.log("[BROWSERLESS] Conectando al navegador remoto...");
-        browser = await chromium.connect(browserWSEndpoint);
+    const data = await page.evaluate(() => {
+      const allAttachments = [];
+      const processedUrls = new Set();
+      const initialUrl = location.href;
 
-        const context = await browser.newContext({
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        });
-        const page = await context.newPage();
-
-        console.log(`[BROWSERLESS] Navegando a: ${initialUrl}`);
-        await page.goto(initialUrl, { waitUntil: 'networkidle' });
-
-        // ... El resto del código de scraping es idéntico ...
-        const allAttachments: { nombre: string; url_descarga: string }[] = [];
-        const processedUrls = new Set<string>();
-        const html = await page.content();
-        const $ = cheerio.load(html);
-
-        $('table[id*="grvAnexos"] tbody tr').each((_, row) => {
-            const nombreAnexo = $(row).find('td:nth-child(1)').text().trim();
-            const inputDescarga = $(row).find('input[type="image"]');
-            if (nombreAnexo && inputDescarga.length > 0) {
-                const onclickAttr = inputDescarga.attr('onclick');
-                const match = onclickAttr?.match(/fn_descargar_anexo_v2\s*\(\s*['"]?(\d+)['"]?/);
-                if (match && match[1]) {
-                    const idDoc = match[1];
-                    const idLicitacion = new URL(initialUrl).searchParams.get('idlicitacion');
-                    const linkDescarga = `https://www.mercadopublico.cl/Procurement/Modules/RFB/DownloadDoc.aspx?idlic=${idLicitacion}&idDoc=${idDoc}`;
-                    if (!processedUrls.has(linkDescarga)) {
-                        allAttachments.push({ nombre: nombreAnexo, url_descarga: linkDescarga });
-                        processedUrls.add(linkDescarga);
-                    }
-                }
+      // 1. Scrapear tabla principal
+      document.querySelectorAll('table[id*="grvAnexos"] tbody tr').forEach(row => {
+        const nombreAnexo = row.querySelector('td:nth-child(1)')?.textContent?.trim();
+        const inputDescarga = row.querySelector('input[type="image"]');
+        if (nombreAnexo && inputDescarga) {
+          const onclickAttr = inputDescarga.getAttribute('onclick');
+          const match = onclickAttr?.match(/fn_descargar_anexo_v2\\s*\\(\\s*['"]?(\\d+)['"]?/);
+          if (match && match[1]) {
+            const idDoc = match[1];
+            const idLicitacion = new URL(initialUrl).searchParams.get('idlicitacion');
+            const linkDescarga = \`https://www.mercadopublico.cl/Procurement/Modules/RFB/DownloadDoc.aspx?idlic=\${idLicitacion}&idDoc=\${idDoc}\`;
+            if (!processedUrls.has(linkDescarga)) {
+              allAttachments.push({ nombre: nombreAnexo, url_descarga: linkDescarga });
+              processedUrls.add(linkDescarga);
             }
-        });
+          }
+        }
+      });
+      
+      // 2. Buscar link a página dedicada
+      const dedicatedPageLink = document.querySelector("a[href*='ViewAttachment.aspx']")?.href;
+      
+      return { allAttachments, dedicatedPageLink };
+    });
 
-        const dedicatedPageLink = await page.$eval("a[href*='ViewAttachment.aspx']", (el) => (el as HTMLAnchorElement).href).catch(() => null);
-
-        if (dedicatedPageLink) {
-            console.log(`[BROWSERLESS] Navegando a la página de adjuntos dedicada: ${dedicatedPageLink}`);
-            await page.goto(dedicatedPageLink, { waitUntil: 'networkidle' });
-
-            const dedicatedHtml = await page.content();
-            const $d = cheerio.load(dedicatedHtml);
-
-            $d('table[id*="grdArchivos"] tbody tr').each((_, row) => {
-                const nombreAnexo = $d(row).find('td').eq(0).text().trim();
-                const linkElement = $d(row).find('td').eq(2).find('a');
-                if (nombreAnexo && linkElement.length > 0) {
-                    const href = linkElement.attr('href');
-                    if(href){
-                        const linkDescarga = new URL(href, initialUrl).href;
-                        if (!processedUrls.has(linkDescarga)) {
-                            allAttachments.push({ nombre: nombreAnexo, url_descarga: linkDescarga });
-                            processedUrls.add(linkDescarga);
-                        }
-                    }
+    // 3. Si hay página dedicada, ir y scrapear también
+    if (data.dedicatedPageLink) {
+        await page.goto(data.dedicatedPageLink, { waitUntil: 'networkidle' });
+        const dedicatedAttachments = await page.evaluate(() => {
+            const attachments = [];
+            const initialUrl = location.href;
+            document.querySelectorAll('table[id*="grdArchivos"] tbody tr').forEach(row => {
+                const nombreAnexo = row.querySelector('td:nth-child(1)')?.textContent?.trim();
+                const linkElement = row.querySelector('td:nth-child(3) a');
+                if (nombreAnexo && linkElement) {
+                    const linkDescarga = new URL(linkElement.href, initialUrl).href;
+                    attachments.push({ nombre: nombreAnexo, url_descarga: linkDescarga });
                 }
             });
-        }
-        console.log(`[BROWSERLESS] Se encontraron ${allAttachments.length} anexos en total.`);
-        return allAttachments;
-
-    } catch (error) {
-        console.error(`[BROWSERLESS_ERROR] Fallo durante el scraping:`, error);
-        return [];
-    } finally {
-        if (browser) {
-            await browser.close();
-        }
+            return attachments;
+        });
+        // Combinar resultados
+        data.allAttachments.push(...dedicatedAttachments);
     }
+    
+    return data.allAttachments;
+  }
+`;
+
+async function scrapeWithBrowserlessAPI(url: string, apiKey: string): Promise<any[]> {
+    const apiEndpoint = `https://chrome.browserless.io/function?token=${apiKey}`;
+    
+    console.log(`[BROWSERLESS-API] Enviando trabajo para: ${url}`);
+    
+    const response = await fetch(apiEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            code: scrapingLogic,
+            context: { url: url } // Pasamos la URL a nuestro script remoto
+        })
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Browserless API falló con status ${response.status}: ${errorText}`);
+    }
+
+    return await response.json();
 }
 
-// El resto del servidor no cambia
 async function handler(req: Request): Promise<Response> {
+    const apiKey = Deno.env.get("BROWSERLESS_API_KEY");
+    if (!apiKey) {
+        return new Response(JSON.stringify({ error: "La variable de entorno BROWSERLESS_API_KEY no está definida." }), { status: 500 });
+    }
+
     if (req.method !== 'POST') {
         return new Response("Método no permitido", { status: 405 });
     }
+
     try {
         const { url } = await req.json();
         if (!url) {
             return new Response(JSON.stringify({ error: 'La URL es requerida' }), { status: 400 });
         }
-        const data = await scrapeAllAttachmentsWithBrowser(url);
+        const data = await scrapeWithBrowserlessAPI(url, apiKey);
         return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
     } catch (e) {
         return new Response(JSON.stringify({ error: e.message }), { status: 500 });
@@ -101,5 +104,5 @@ async function handler(req: Request): Promise<Response> {
 }
 
 const port = Deno.env.get("PORT") ? Number(Deno.env.get("PORT")) : 8000;
-console.log(`Servidor de scraping listo para recibir peticiones en el puerto ${port}.`);
+console.log(`Servidor de scraping simple listo para recibir peticiones en el puerto ${port}.`);
 serve(handler, { port, hostname: "0.0.0.0" });
