@@ -1,7 +1,10 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
+// --- SECCIÓN MODIFICADA ---
+// Cambiamos de una función flecha a una función tradicional para compatibilidad.
 const scrapingLogic = `
-  async ({ page, url }) => {
+  async function(context) {
+    const { page, url } = context; // Obtenemos las variables del contexto
     await page.goto(url, { waitUntil: 'networkidle' });
 
     const data = await page.evaluate(() => {
@@ -55,9 +58,9 @@ const scrapingLogic = `
     return uniqueAttachments;
   }
 `;
+// --- FIN DE LA SECCIÓN MODIFICADA ---
 
 async function scrapeWithBrowserlessAPI(url: string, apiKey: string): Promise<any[]> {
-    // --- ÚNICO CAMBIO AQUÍ ---
     const apiEndpoint = `https://production-sfo.browserless.io/function?token=${apiKey}`;
     
     console.log(`[BROWSERLESS-API] Enviando trabajo para: ${url}`);
